@@ -1,22 +1,40 @@
 package key_value_store
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.twitter.finatra.http.Controller
 import com.twitter.finatra.http.annotations.QueryParam
 
 import javax.inject.Inject
 import scala.collection.mutable
 
-class KeyValueController @Inject() extends Controller {
-  private val entries = mutable.HashMap[String, String]()
+// file checkpointing
 
-  post("/set") { req: Entry =>
-    entries.put(req.key, req.value)
+case class Value(value: String, expirationTimestamp: Option[Long])
+
+class KeyValueController @Inject() extends Controller {
+  private val entries = mutable.HashMap[String, Value]()
+  private val serializer: ObjectMapper = new ObjectMapper().registerModule(DefaultScalaModule)
+
+  post("/set") { req: SetRequest =>
+    val ttl = req.ttl.map(ttl => ttl * 1000 + System.currentTimeMillis())
+
+    val value = Value(req.value, ttl)
+    entries.put(req.key, value)
     req
   }
 
   get("/get") { req: GetRequest =>
     entries.get(req.key)
-      .map(Entry(req.key, _))
+      .filter(v => {
+        val isValid = v.expirationTimestamp.forall(_ > System.currentTimeMillis())
+        // If the timestamp is expired, remove it from the map
+        if (!isValid) {
+          entries.remove(req.key)
+        }
+        isValid
+      })
+      .map(v => SetRequest(req.key, v.value, v.expirationTimestamp))
       .getOrElse {
         response.notFound(Errors(List(s"Key not found: ${req.key}")))
       }
@@ -28,6 +46,19 @@ class KeyValueController @Inject() extends Controller {
       .getOrElse(s"Key did not exist: ${req.key}")
 
     DeleteRequestResponse(resp)
+  }
+}
+
+case class SetRequest(
+  key: String,
+  value: String,
+  ttl: Option[Long]
+) {
+  def asEntry: Entry = {
+    Entry(
+      key = key,
+      value = value
+    )
   }
 }
 
