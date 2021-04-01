@@ -10,7 +10,9 @@ import javax.inject.Inject
 import scala.collection.mutable
 import scala.io.Source
 
-// file checkpointing
+// searching endpoint
+// if input matches any key, return key-value ttl
+// substring, case sensitive
 
 case class Value(value: String, expirationTimestamp: Option[Long])
 
@@ -91,6 +93,15 @@ class KeyValueController @Inject() extends Controller {
       .getOrElse(s"Key did not exist: ${req.key}")
 
     DeleteRequestResponse(resp)
+  }
+
+  get("/search") { req: GetRequest =>
+    entries.collectFirst {
+      case (key, value) if key.contains(req.key) =>
+        SetRequest(key, value.value, value.expirationTimestamp)
+    }.getOrElse {
+      response.notFound(Errors(List(s"Key not found: ${req.key}")))
+    }
   }
 }
 
