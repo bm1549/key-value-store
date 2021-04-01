@@ -5,22 +5,63 @@ import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import com.twitter.finatra.http.Controller
 import com.twitter.finatra.http.annotations.QueryParam
 
+import java.io.{BufferedWriter, File, FileWriter}
 import javax.inject.Inject
 import scala.collection.mutable
+import scala.io.Source
 
 // file checkpointing
 
 case class Value(value: String, expirationTimestamp: Option[Long])
 
+case class FileStorage(values: List[SetRequest])
+
 class KeyValueController @Inject() extends Controller {
   private val entries = mutable.HashMap[String, Value]()
   private val serializer: ObjectMapper = new ObjectMapper().registerModule(DefaultScalaModule)
+  private val filePath = "./storage"
+
+  reload()
+
+  private def persist(): Unit = {
+    val entriesToStore = entries.toList.map {
+      case (key, value) =>
+      SetRequest(key, value.value, value.expirationTimestamp)
+    }
+
+    val thingToStore = FileStorage(entriesToStore)
+
+    val storageFile = new File(filePath)
+
+    val bw = new BufferedWriter(new FileWriter(storageFile))
+    bw.write(serializer.writeValueAsString(thingToStore))
+    bw.close()
+  }
+
+  private def reload(): Unit = {
+    val storageFile = new File(filePath)
+    if (!storageFile.exists()) {
+      val bw = new BufferedWriter(new FileWriter(storageFile))
+      bw.write(serializer.writeValueAsString(FileStorage(Nil)))
+      bw.close()
+    }
+
+    val source = Source.fromFile(filePath)
+    val json = source.mkString
+
+    val fileStorage = serializer.readValue(json, classOf[FileStorage])
+
+    fileStorage.values.foreach { setReq =>
+      entries.put(setReq.key, Value(setReq.value, setReq.ttl))
+    }
+  }
 
   post("/set") { req: SetRequest =>
     val ttl = req.ttl.map(ttl => ttl * 1000 + System.currentTimeMillis())
 
     val value = Value(req.value, ttl)
     entries.put(req.key, value)
+    persist()
     req
   }
 
@@ -31,6 +72,7 @@ class KeyValueController @Inject() extends Controller {
         // If the timestamp is expired, remove it from the map
         if (!isValid) {
           entries.remove(req.key)
+          persist()
         }
         isValid
       })
@@ -42,7 +84,10 @@ class KeyValueController @Inject() extends Controller {
 
   post("/delete") { req: DeleteRequestResponse =>
     val resp = entries.remove(req.key)
-      .map(_ => req.key)
+      .map(_ => {
+        persist()
+        req.key
+      })
       .getOrElse(s"Key did not exist: ${req.key}")
 
     DeleteRequestResponse(resp)
